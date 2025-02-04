@@ -23,69 +23,38 @@
 
 
 WITH
-DT AS (
+ALL_TRADES AS (
     SELECT 
-        CASE
-            WHEN token_sold_address = UPPER('0:b113a994b5024a16719f69139328eb759596c38a25f59028b146fecdc3621dfe') 
-                THEN token_bought_address
-            WHEN token_bought_address != UPPER('0:b113a994b5024a16719f69139328eb759596c38a25f59028b146fecdc3621dfe')
-                 AND token_sold_address IN (
-                     '0:0000000000000000000000000000000000000000000000000000000000000000',
-                     UPPER('0:8cdc1d7640ad5ee326527fc1ad0514f468b30dc84b0173f0e155f451b4e11f7c')
-                 )
-                THEN token_bought_address
-            ELSE token_sold_address
-        END AS token_address,
-        CASE
-            WHEN token_sold_address = UPPER('0:b113a994b5024a16719f69139328eb759596c38a25f59028b146fecdc3621dfe') 
-                THEN amount_bought_raw
-            WHEN token_bought_address != UPPER('0:b113a994b5024a16719f69139328eb759596c38a25f59028b146fecdc3621dfe')
-                 AND token_sold_address IN ( 
-                     '0:0000000000000000000000000000000000000000000000000000000000000000',
-                     UPPER('0:8cdc1d7640ad5ee326527fc1ad0514f468b30dc84b0173f0e155f451b4e11f7c')
-                 )
-                THEN amount_bought_raw
-            ELSE amount_sold_raw
-        END AS amount_raw,
+        token_address,
+        amount_raw,
         volume_usd,
         volume_ton,
         block_time,
         trader_address
     FROM ton.dex_trades
-    WHERE amount_bought_raw > 100 AND amount_sold_raw > 100
+    CROSS JOIN UNNEST (ARRAY[
+      ROW(token_bought_address, amount_bought_raw), 
+      ROW(token_sold_address, amount_sold_raw)
+      ]) AS T(token_address, amount_raw)
 )
-
--- add missing USDT trades to store all prices in one table
-, USDT_TRADES AS (
-    SELECT 
-        UPPER('0:b113a994b5024a16719f69139328eb759596c38a25f59028b146fecdc3621dfe') AS token_address,
-        CAST(amount_raw AS DOUBLE) / volume_ton * volume_usd * POWER(10, 6-9) AS amount_raw, -- ton
-        volume_usd, 
-        volume_ton,
-        block_time,
-        trader_address
-    FROM DT
-    WHERE token_address = '0:0000000000000000000000000000000000000000000000000000000000000000'
-)
-
-, ALL_TRADES AS (
-    SELECT *
-    FROM DT
-    UNION ALL
-    SELECT * 
-    FROM USDT_TRADES
-)
-
 , PRICES_FROM_DEX_TRADES AS (
     SELECT
         token_address,
         DATE_TRUNC('day', block_time) AS ts,
-        SUM(volume_ton) / SUM(CAST(amount_raw AS DOUBLE)) AS price_ton,
-        SUM(volume_usd) / SUM(CAST(amount_raw AS DOUBLE)) AS price_usd
+        CASE
+          WHEN token_address = '0:0000000000000000000000000000000000000000000000000000000000000000' THEN 1e-9
+          ELSE SUM(volume_ton) / SUM(CAST(amount_raw AS DOUBLE))
+        END AS price_ton,
+        
+        CASE
+          WHEN token_address = '0:B113A994B5024A16719F69139328EB759596C38A25F59028B146FECDC3621DFE' THEN 1e-6
+          ELSE SUM(volume_usd) / SUM(CAST(amount_raw AS DOUBLE))
+        END AS price_usd
     FROM ALL_TRADES
     GROUP BY 1, 2
     HAVING 1=1
         AND COUNT(*) >= 100  -- 100 trades / day
+        AND SUM(volume_usd) >= 100  -- 100$ volume per day
         AND COUNT(DISTINCT trader_address) >= 10 -- 10 traders / day
         
 )
